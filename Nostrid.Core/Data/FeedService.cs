@@ -10,16 +10,18 @@ public class FeedService
     private readonly EventDatabase eventDatabase;
     private readonly RelayService relayService;
     private readonly AccountService accountService;
+    private readonly ChannelService channelService;
 
-    public event EventHandler<(string filterId, IEnumerable<Event> notes)> ReceivedNotes;
+    public event EventHandler<(string filterId, IEnumerable<Event> notes)> NotesReceived;
     public event EventHandler<Event> NoteUpdated;
     public event EventHandler<(string EventId, Event Child)> NoteReceivedChild;
 
-    public FeedService(EventDatabase eventDatabase, RelayService relayService, AccountService accountService)
+    public FeedService(EventDatabase eventDatabase, RelayService relayService, AccountService accountService, ChannelService channelService)
     {
         this.eventDatabase = eventDatabase;
         this.relayService = relayService;
         this.accountService = accountService;
+        this.channelService = channelService;
         this.relayService.ReceivedEvents += ReceivedEvents;
         Task.Run(() => HandleEventsAsync(eventDatabase.ListUnprocessedEvents()));
     }
@@ -38,7 +40,12 @@ public class FeedService
                 accountService.HandleKind0(eventToProcess);
                 break;
             case NostrKind.Text:
-                HandleKind1(eventToProcess);
+            case NostrKind.ChannelMessage:
+                HandleMessage(eventToProcess);
+                if (eventToProcess.Kind == NostrKind.ChannelMessage)
+                {
+                    channelService.MessageProcessed(eventToProcess);
+                }
                 break;
             case NostrKind.Relay:
                 HandleKind2(eventToProcess);
@@ -55,6 +62,11 @@ public class FeedService
             case NostrKind.Reaction:
                 HandleKind7(eventToProcess);
                 break;
+            case NostrKind.ChannelCreation:
+            case NostrKind.ChannelMetadata:
+                channelService.HandleChannelCreationOrMetadata(eventToProcess);
+                break;
+
             default:
                 eventToProcess.Processed = true;
                 eventDatabase.SaveEvent(eventToProcess);
@@ -69,12 +81,13 @@ public class FeedService
         var notes = data.events.Where(ev => !eventDatabase.IsEventDeleted(ev.Id));
         if (notes.Any())
         {
-            ReceivedNotes?.Invoke(this, (data.filterId, notes));
+            NotesReceived?.Invoke(this, (data.filterId, notes));
         }
     }
 
-    public void HandleKind1(Event eventToProcess)
+    public void HandleMessage(Event eventToProcess)
     {
+        var inChannel = eventToProcess.Kind == NostrKind.ChannelMessage;
         var noteMetadata = eventToProcess.NoteMetadata = new NoteMetadata();
 
         // NIP-10 https://github.com/nostr-protocol/nips/blob/master/10.md
@@ -87,33 +100,82 @@ public class FeedService
             .Where(t => t.TagIdentifier == "e" && t.Data.Count == 3 && t.Data[2] == "root")
             .Select(t => (t.Data[0], t.Data[1]))
             .FirstOrDefault();
-        if (string.IsNullOrEmpty(replyToId))
+
+        if (!inChannel)
         {
-            var e = eventToProcess.Tags.Where(t => t.TagIdentifier == "e").ToList();
-            switch (e.Count)
+            if (replyToId.IsNullOrEmpty())
             {
-                case 1:
-                    var edata = e.Last().Data;
-                    if (edata.Count > 0)
-                    {
-                        replyToId = edata[0];
-                        if (edata.Count > 1) relayReplay ??= edata[1];
-                    }
-                    break;
-                case > 1:
-                    replyToId = e.Last().Data[0];
-                    rootId ??= e.First().Data[0];
-                    break;
+                // If reply is empty then maybe the client used the deprecated method, let's check
+                var e = eventToProcess.Tags.Where(t => t.TagIdentifier == "e").ToList();
+                switch (e.Count)
+                {
+                    case 1:
+                        var edata = e.Last().Data;
+                        if (edata.Count > 0)
+                        {
+                            replyToId = edata[0];
+                            if (edata.Count > 1) relayReplay ??= edata[1];
+                        }
+                        break;
+                    case > 1:
+                        replyToId = e.Last().Data[0];
+                        rootId ??= e.First().Data[0];
+                        break;
+                }
             }
+            //if (Utils.IsValidNostrId(replyToId))
+            //{
+            //    noteMetadata.ReplyToId = replyToId;
+            //}
+            //if (Utils.IsValidNostrId(rootId))
+            //{
+            //    noteMetadata.ReplyToRootId = rootId;
+            //}
         }
+        else
+        {
+            if (rootId.IsNullOrEmpty())
+            {
+                // If root is empty then it's not specified what happens but let's try a similar approach than before
+                var e = eventToProcess.Tags.Where(t => t.TagIdentifier == "e").ToList();
+                switch (e.Count)
+                {
+                    case 1:
+                        var edata = e.Last().Data;
+                        if (edata.Count > 0)
+                        {
+                            rootId = edata[0]; // Slight change.. here one 'e' tag means root aka channel
+                            if (edata.Count > 1) relayReplay ??= edata[1];
+                        }
+                        break;
+                    case > 1:
+                        replyToId = e.Last().Data[0];
+                        rootId ??= e.First().Data[0];
+                        break;
+                }
+            }
+            //if (Utils.IsValidNostrId(replyToId))
+            //{
+            //    noteMetadata.ReplyToId = replyToId;
+            //}
+            //if (Utils.IsValidNostrId(rootId))
+            //{
+            //    noteMetadata.ReplyToRootId = rootId;
+            //}
+        }
+
         if (Utils.IsValidNostrId(replyToId))
         {
             noteMetadata.ReplyToId = replyToId;
         }
         if (Utils.IsValidNostrId(rootId))
         {
-            noteMetadata.ReplyToRootId = rootId;
+            if (!inChannel)
+                noteMetadata.ReplyToRootId = rootId;
+            else
+                noteMetadata.ChannelId = rootId;
         }
+
         foreach (var relay in new[] { relayRoot, relayReplay })
         {
             if (!string.IsNullOrEmpty(relay))
@@ -146,6 +208,11 @@ public class FeedService
 
         eventToProcess.Processed = true;
         eventDatabase.SaveEvent(eventToProcess);
+
+        if (inChannel && !noteMetadata.ChannelId.IsNullOrEmpty())
+        {
+            eventDatabase.CreateChannel(noteMetadata.ChannelId);
+        }
 
         NoteUpdated?.Invoke(this, eventToProcess);
         if (!string.IsNullOrEmpty(replyToId))
@@ -197,7 +264,7 @@ public class FeedService
     public void HandleKind6(Event eventToProcess)
     {
         // NIP-18: https://github.com/nostr-protocol/nips/blob/master/18.md
-        //if (string.IsNullOrEmpty(eventToProcess.Content)) // As per the NIP, content must be empty (disabled since many clients ignore this)
+        if (string.IsNullOrEmpty(eventToProcess.Content)) // As per the NIP, content must be empty
         {
             var e = eventToProcess.Tags.FirstOrDefault(t => t.TagIdentifier == "e" && t.Data.Count > 0);
 
@@ -287,6 +354,11 @@ public class FeedService
         return eventDatabase.ListNoteTree(eventId, downLevels, out maxReached).ToList();
     }
 
+    public List<NoteTree> GetTreesFromNotesNoGrouping(IEnumerable<Event> evs)
+    {
+        return evs.Select(ev => new NoteTree(ev) { Details = accountService.GetAccountDetails(ev.PublicKey) }).ToList();
+    }
+
     public List<NoteTree> GetTreesFromNotes(IEnumerable<Event> tws)
     {
         List<NoteTree> rootTrees = new();
@@ -295,8 +367,10 @@ public class FeedService
         {
             if (rootTrees.Exists(tw.Id)) continue;
             var root = rootTrees.Find(tw.NoteMetadata.ReplyToId);
-            var newTree = new NoteTree(tw);
-            newTree.Details = accountService.GetAccountDetails(tw.PublicKey);
+            var newTree = new NoteTree(tw)
+            {
+                Details = accountService.GetAccountDetails(tw.PublicKey)
+            };
             if (root != null)
             {
                 root.Children.Add(newTree);
@@ -321,9 +395,9 @@ public class FeedService
         return rootTrees;
     }
 
-    public async Task<bool> SendNoteWithPow(string content, Event replyTo, int diff, CancellationToken cancellationToken)
+    public async Task<bool> SendNoteWithPow(string content, bool inChannel, string? replyToId, string? rootId, IEnumerable<string>? accountMentionIds, int diff, CancellationToken cancellationToken)
     {
-        var unsignedNote = AssembleNote(content, replyTo);
+        var unsignedNote = AssembleNote(content, inChannel, replyToId, rootId, accountMentionIds);
 
         if (diff > 0)
         {
@@ -382,8 +456,13 @@ public class FeedService
         return true;
     }
 
-    private NostrEvent AssembleNote(string content, Event replyTo)
+    private NostrEvent AssembleNote(string content, bool inChannel, string? replyToId, string? rootId, IEnumerable<string>? accountMentionIds)
     {
+        if (accountService.MainAccount == null)
+        {
+            throw new Exception("MainAccount not loaded");
+        }
+
         var unescapedContent = content.Trim();
 
         var ps = new List<string>();
@@ -435,18 +514,18 @@ public class FeedService
         var nostrEvent = new NostrEvent()
         {
             CreatedAt = DateTimeOffset.UtcNow,
-            Kind = 1,
+            Kind = inChannel ? NostrKind.ChannelMessage : NostrKind.Text,
             PublicKey = accountService.MainAccount.Id,
             Tags = new(),
             Content = unescapedContent,
         };
 
-        if (replyTo != null)
+        if (!replyToId.IsNullOrEmpty())
         {
             // Use preferred method as per NIP-10 https://github.com/nostr-protocol/nips/blob/master/10.md
-            var replyToId = replyTo.Id;
-            var rootId = replyTo.NoteMetadata.ReplyToRootId;
-            if (string.IsNullOrEmpty(rootId))
+            //var replyToId = replyTo.Id;
+            //var rootId = replyTo.NoteMetadata.ReplyToRootId;
+            if (rootId.IsNullOrEmpty())
             {
                 // RootId missing maybe because of a faulty/deprecated client. Let's try to find the rootId
                 rootId = replyToId;
@@ -458,19 +537,19 @@ public class FeedService
                         rootId = null;
                         break;
                     }
-                    if (!string.IsNullOrEmpty(ev.NoteMetadata.ReplyToRootId))
+                    if (!ev.NoteMetadata.ReplyToRootId.IsNullOrEmpty())
                     {
                         rootId = ev.NoteMetadata.ReplyToRootId;
                         break;
                     }
-                    if (string.IsNullOrEmpty(ev.NoteMetadata.ReplyToId))
+                    if (ev.NoteMetadata.ReplyToId.IsNullOrEmpty())
                     {
                         break;
                     }
                     rootId = ev.NoteMetadata.ReplyToId;
                 }
             }
-            if (string.IsNullOrEmpty(rootId) || replyToId == rootId)
+            if (rootId.IsNullOrEmpty() || replyToId == rootId)
             {
                 // A direct reply to the root of a thread should have a single marked "e" tag of type "root".
                 ers.Add((replyToId, "root"));
@@ -482,11 +561,18 @@ public class FeedService
             }
 
             // When replying to a text event E the reply event's "p" tags should contain all of E's "p" tags as well as the "pubkey" of the event being replied to.
-            foreach (var mention in replyTo.NoteMetadata.AccountMentions.Values.Union(new[] { replyTo.PublicKey }))
+            if (accountMentionIds != null)
             {
-                if (!ps.Contains(mention) && !prs.Contains(mention))
-                    prs.Add(mention);
+                foreach (var mention in accountMentionIds) // replyTo.NoteMetadata.AccountMentions.Values.Union(new[] { replyTo.PublicKey }))
+                {
+                    if (!ps.Contains(mention) && !prs.Contains(mention))
+                        prs.Add(mention);
+                }
             }
+        }
+        else if (inChannel)
+        {
+            ers.Add((rootId, "root"));
         }
 
         // First p's (mentions) (indexed)

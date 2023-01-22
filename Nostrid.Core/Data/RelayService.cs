@@ -200,6 +200,11 @@ public class RelayService
 
     public void AddFilters(params SubscriptionFilter[] fls)
     {
+        AddFilters((IEnumerable<SubscriptionFilter>)fls);
+    }
+
+    public void AddFilters(IEnumerable<SubscriptionFilter> fls)
+    {
         lock (filters)
         {
             filters.AddRange(fls);

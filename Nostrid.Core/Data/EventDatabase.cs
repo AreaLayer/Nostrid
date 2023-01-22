@@ -2,6 +2,7 @@
 using LinqKit;
 using LiteDB;
 using NNostr.Client;
+using Nostrid.Data.Relays;
 
 namespace Nostrid.Data
 {
@@ -15,6 +16,7 @@ namespace Nostrid.Data
         private ILiteCollection<OwnEvent> OwnEvents;
         private ILiteCollection<FeedSource> FeedSources;
         private ILiteCollection<Config> Configs;
+        private ILiteCollection<Channel> Channels;
 
         public int EventsPending => Events.Query().Where(e => !e.Processed).Count();
 
@@ -49,6 +51,7 @@ namespace Nostrid.Data
             FeedSources = Database.GetCollection<FeedSource>();
             FeedSources.EnsureIndex(e => e.OwnerId);
             Configs = Database.GetCollection<Config>();
+            Channels = Database.GetCollection<Channel>();
         }
 
         public void SaveRelay(Relay relay)
@@ -198,7 +201,9 @@ namespace Nostrid.Data
             }
             if (filter.EventId != null)
             {
-                notes = notes.Where(e => filter.EventId.Contains(e.NoteMetadata.ReplyToId));
+                notes = notes.Where(e =>
+                    filter.EventId.Contains(e.NoteMetadata.ReplyToId) ||
+                    filter.EventId.Contains(e.NoteMetadata.ChannelId));
             }
             if (filter.ExtensionData != null)
             {
@@ -333,6 +338,69 @@ namespace Nostrid.Data
         {
             Configs.Upsert(config);
             DatabaseHasChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public Channel GetChannel(string id)
+        {
+            return Channels.FindById(id) ?? new Channel() { Id = id };
+        }
+
+        public void CreateChannel(string id)
+        {
+            if (!Channels.Exists(c => c.Id == id))
+            {
+                Channels.Upsert(new Channel() { Id = id });
+            }
+        }
+
+        public void SaveChannel(Channel channel)
+        {
+            Channels.Upsert(channel);
+        }
+
+        public List<Channel> ListChannels()
+        {
+            return Channels.Query().ToList();
+        }
+
+        public int GetChannelMessagesInDb(string channelId)
+        {
+            return Events.Query().Where(e => e.Kind == NostrKind.ChannelMessage && e.NoteMetadata.ChannelId == channelId).Count();
+        }
+
+        public List<ChannelWithInfo> ListChannelsWithInfo()
+        {
+            // Get message count by channel
+            var channelsQ = Events.Query()
+                .Where(e => e.Kind == NostrKind.ChannelMessage && e.NoteMetadata.ChannelId != null)
+                .GroupBy($"{nameof(Event.NoteMetadata)}.{nameof(Event.NoteMetadata.ChannelId)}")
+                .Select($"{{_id:@key, {nameof(ChannelWithInfo.MessageCount)}:Count(*)}}");
+            var channelsMessageCount = channelsQ
+                .ToEnumerable()
+                .Select(c => BsonMapper.Global.Deserialize<ChannelWithInfo>(c))
+                .ToDictionary(c => c.Id);
+
+            // Get all channels with details and populate with previous data
+            var channelsWithInfo = Channels
+                .Query()
+                .ToEnumerable()
+                .Select(c =>
+                    new ChannelWithInfo(c)
+                    {
+                        MessageCount = channelsMessageCount.TryGetValue(c.Id, out var channelInfo) ? channelInfo.MessageCount : 0
+                    })
+                .ToList();
+
+            // Add channels with count but without details
+            foreach (var (channelId, channelInfo) in channelsMessageCount)
+            {
+                if (!channelsWithInfo.Any(c => c.Id == channelId))
+                {
+                    channelsWithInfo.Add(new ChannelWithInfo() { Id = channelId, MessageCount = channelInfo.MessageCount });
+                }
+            }
+
+            return channelsWithInfo;
         }
     }
 }

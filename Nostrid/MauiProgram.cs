@@ -39,6 +39,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<INotificationCounter, NotificationCounter>();
         builder.Services.AddSingleton<ConfigService>();
         builder.Services.AddSingleton<IClipboardService, ClipboardService>();
+        builder.Services.AddSingleton<ChannelService>();
 
 		var app = builder.Build();
 

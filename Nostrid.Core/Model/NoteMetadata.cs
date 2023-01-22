@@ -2,6 +2,8 @@ namespace Nostrid.Model;
 
 public class NoteMetadata
 {
+    public string ChannelId { get; set; }
+
     public string ReplyToId { get; set; }
 
     public string ReplyToRootId { get; set; }

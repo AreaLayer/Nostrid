@@ -14,6 +14,9 @@
 
     [Parameter, EditorRequired]
     public int[] MessageKinds { get; set; }
+
+    [Parameter]
+    public string? ChannelId { get; set; }
 }
 
 @if (newN.Count > 0)
@@ -33,7 +36,7 @@
 }
 else
 {
-    <NoteTreeViewer @ref="noteTreeViewer" Trees="@feedService.GetTreesFromNotes(renderedN.Values)" NewestOnTop="true" />
+    <NoteTreeViewer @ref="noteTreeViewer" Trees="@(inChannel ? feedService.GetTreesFromNotesNoGrouping(renderedN.Values) : feedService.GetTreesFromNotes(renderedN.Values))" NewestOnTop="true" />
     <div class="text-center border-top px-3" style="margin: 0 -1rem -1rem -1rem;">
         <button class="btn btn-link btn-sm mx-3 my-2" type="button" @onclick="@LoadMore">Load more</button>
     </div>
@@ -46,6 +49,7 @@ else
 </div>
 
 @code {
+    private bool inChannel => !ChannelId.IsNullOrEmpty();
     private ConcurrentDictionary<string, Event> renderedN = new(), newN = new(), oldN = new();
     private int dbLimit;
     private SubscriptionFilter? newFilter, oldFilter;
@@ -162,7 +166,7 @@ else
 
         LoadMore();
 
-        feedService.ReceivedNotes += ReceivedNotes;
+        feedService.NotesReceived += ReceivedNotes;
         feedService.NoteUpdated += NoteUpdated;
         feedService.NoteReceivedChild += NoteReceivedChild;
 
@@ -225,7 +229,7 @@ else
 
     private void Cleanup()
     {
-        feedService.ReceivedNotes -= ReceivedNotes;
+        feedService.NotesReceived -= ReceivedNotes;
         feedService.NoteUpdated -= NoteUpdated;
         feedService.NoteReceivedChild -= NoteReceivedChild;
         relayService.DeleteFilters(newFilter, oldFilter);
