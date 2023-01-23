@@ -4,29 +4,21 @@
     public string? Id { get; set; }
 
     [Parameter]
-    public AccountDetails? Details { get; set; }
+    public string? Url { get; set; }
 
     [Parameter]
-    public int? Size { get; set; }
+    public int Size { get; set; } = 48;
 }
 
-@using Nostrid.Model;
 @using Nostrid.Misc;
 
-@if (!string.IsNullOrEmpty(PictureUrl) && Uri.IsWellFormedUriString(PictureUrl, UriKind.Absolute))
+@if (!string.IsNullOrEmpty(Url) && Uri.IsWellFormedUriString(Url, UriKind.Absolute))
 {
-    <img style="width:@(Size ?? DEFAULT_SIZE)px; height:@(Size ?? DEFAULT_SIZE)px" src="@PictureUrl" class="card-img-top rounded-999" alt="">
+    <img style="width:@(Size)px; height:@(Size)px" src="@Url" class="rounded-999" alt="">
 }
-else if (!string.IsNullOrEmpty(AccountId))
+else if (!string.IsNullOrEmpty(Id))
 {
-    <div style="width:@(Size ?? DEFAULT_SIZE)px; height:@(Size ?? DEFAULT_SIZE)px" class="rounded-999 overflow-hidden">
-        @((MarkupString)Utils.ToSvgIdenticon(AccountId, Size ?? DEFAULT_SIZE))
+    <div style="width:@(Size)px; height:@(Size)px" class="rounded-999 overflow-hidden">
+        @((MarkupString)Utils.ToSvgIdenticon(Id, Size))
     </div>
-}
-
-@code {
-    const int DEFAULT_SIZE = 48;
-
-    private string? PictureUrl => Details?.PictureUrl;
-    private string? AccountId => Id;
 }

@@ -29,7 +29,7 @@
 <div class="d-flex flex-row">
     <div class="d-flex flex-column flex-shrink-0">
         <a href="/account/@Event?.PublicKey" @onclick:stopPropagation="true">
-            <AccountPicture Details="@accountDetails" Id="@Event?.PublicKey"></AccountPicture>
+            <AccountPicture Url="@accountDetails?.PictureUrl" Id="@Event?.PublicKey"></AccountPicture>
         </a>
         @LeftPlaceholder
     </div>
@@ -74,7 +74,7 @@
         </p>
         @if ((Event?.NoteMetadata.ChannelId).IsNotNullOrEmpty())
         {
-            <p class="mb-1" style="font-size:0.5rem">Channel ID: @Event.NoteMetadata.ChannelId</p>
+            <p class="mb-1 fs-7">Channel ID: @Event.NoteMetadata.ChannelId</p>
         }
         @switch (Event?.Kind)
         {
